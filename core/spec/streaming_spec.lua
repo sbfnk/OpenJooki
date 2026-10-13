@@ -1,5 +1,7 @@
 local streaming = require("services.streaming")
 local playback = require("services.playback")
+local resume = require("services.playback.resume")
+local function emitted(r, t) for _, c in ipairs((r and r.commands) or {}) do if c.kind == "emit" and c.event.type == t then return c.event end end end
 
 local function doc_with(o)
   o = o or {}
@@ -184,6 +186,127 @@ describe("services.streaming — presets, config, login", function()
     apply(doc, streaming.on_spotify(doc, { type = "spotify.playing" }))
     assert_eq(doc.playback.now.playlist, "sp"); assert_eq(doc.playback.state, "playing")
     assert_eq(topics(playback.on_pause(doc, { source = "token" })), { "spotify/output/pauz " })
+  end)
+
+  it("the token put back on its paused Spotify playlist starts it again, or continues it when the playlist is set to resume", function()
+    local function paused_on_sp(on)
+      local doc = doc_with()
+      doc.library.playlists.sp.resume = on
+      apply(doc, playback.on_request(doc, { playlist = "sp", now = 1 }))
+      apply(doc, streaming.on_spotify(doc, { type = "spotify.playing" }))
+      apply(doc, streaming.on_spotify(doc, { type = "spotify.paused" }))
+      return doc
+    end
+    assert_eq(topics(playback.on_request(paused_on_sp(nil), { playlist = "sp", now = 2 }))[1], "spotify/output/play_preset AB")
+    local doc = paused_on_sp(true)
+    local r = playback.on_request(doc, { playlist = "sp", now = 2 })
+    assert_eq(topics(r), { "spotify/output/cont " }); assert_nil(r.state)
+    -- another playlist in between: its preset, as before
+    apply(doc, playback.on_request(doc, { playlist = "loc", now = 3 }))
+    doc.playback.state = "paused"
+    assert_eq(topics(playback.on_request(doc, { playlist = "sp", now = 4 })), { "audio/out/stop 7", "spotify/output/play_preset AB", "emit playback.changed starting" })
+  end)
+
+  it("a playlist set to resume saves where it stopped on token off, and plays from there after another playlist", function()
+    local doc = doc_with()
+    doc.library.playlists.sp.resume = true
+    apply(doc, playback.on_request(doc, { playlist = "sp", now = 1 }))
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.now_playing", data = { source_uri = "spotify:playlist:1", track = "So What" }, now = 1 }))
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.playing", now = 1 }))
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.position", ms = 96824, now = 2 }))
+    -- token off: playback hands over to streaming, which asks for a preset, then pauses
+    local r = playback.on_pause(doc, { source = "token", now = 2 })
+    local ev = emitted(r, "streaming.save_resume")
+    assert_eq(ev, { type = "streaming.save_resume", playlist = "sp", position_ms = 96824 })
+    ev.now = 2
+    r = streaming.on_save_resume(doc, ev)
+    assert_eq(topics(r), { "spotify/output/save_preset ", "spotify/output/pauz " })
+    apply(doc, r)
+    -- Spotify answers with where it is: resume.json gets it at once
+    r = streaming.on_spotify(doc, { type = "spotify.new_preset", raw = "CD" })
+    ev = emitted(r, "playback.spotify_resume")
+    assert_eq(ev.playlist, "sp"); assert_eq(ev.title, "So What"); assert_eq(ev.preset, "4344"); assert_eq(ev.position_ms, 96824); assert_true(ev.flush)
+    apply(doc, r)
+    assert_nil(doc.streaming_int.resume_for)
+    r = resume.on_spotify(doc, ev)
+    assert_eq(r.commands[1].path, "/d/resume.json"); assert_eq(r.commands[1].doc.sp, { id = "So What", pos = 96824, preset = "4344" })
+    apply(doc, r)
+    assert_eq(doc.library.playlists.sp.spotify, { uri = "spotify:playlist:1", preset = "4142" })
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.paused", now = 3 }))
+    -- another playlist in between, then the token again: the saved preset, and the seek once it plays
+    apply(doc, playback.on_request(doc, { playlist = "loc", now = 3 }))
+    r = playback.on_request(doc, { playlist = "sp", now = 4 })
+    assert_eq(topics(r)[2], "spotify/output/play_preset CD")
+    assert_eq(r.state.playback.resume_ms, 96824 - 15000)
+    apply(doc, r)
+    r = streaming.on_spotify(doc, { type = "spotify.playing" })
+    assert_eq(topics(r), { "emit playback.changed playing", "spotify/output/seek 81824" })
+    apply(doc, r)
+    assert_nil(doc.playback.resume_ms)
+    -- with the switch off: the preset saved with the playlist, from its start
+    doc.library.playlists.sp.resume = nil
+    apply(doc, playback.on_request(doc, { playlist = "loc", now = 5 }))
+    r = playback.on_request(doc, { playlist = "sp", now = 6 })
+    assert_eq(topics(r)[2], "spotify/output/play_preset AB"); assert_nil(r.state.playback.resume_ms)
+  end)
+
+  it("a playlist set to resume keeps its place while it plays: a Jooki switched off with the token on starts there", function()
+    local doc = doc_with()
+    doc.library.playlists.sp.resume = true
+    local function track(name, t) apply(doc, streaming.on_spotify(doc, { type = "spotify.now_playing", data = { source_uri = "spotify:playlist:1", track = name, duration_ms = 600000 }, now = t })) end
+    apply(doc, playback.on_request(doc, { playlist = "sp", now = 0 }))
+    track("So What", 0)
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.playing", now = 0 }))
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.position", ms = 1000, now = 1 }))
+    -- the first tick asks Spotify for a preset of the track; not again while the answer is on its way
+    local r = streaming.on_resume_tick(doc, { now = 30 })
+    assert_eq(topics(r), { "spotify/output/save_preset " })
+    assert_eq(r.state.streaming_int.resume_for, { playlist = "sp", title = "So What", position_ms = 30000, t = 30 })
+    apply(doc, r)
+    assert_nil(streaming.on_resume_tick(doc, { now = 40 }))
+    r = streaming.on_spotify(doc, { type = "spotify.new_preset", raw = "CD" })
+    local ev = emitted(r, "playback.spotify_resume")
+    assert_nil(ev.flush)
+    apply(doc, r)
+    r = resume.on_spotify(doc, ev)
+    assert_nil(r.commands); assert_true(r.state.playback_int.resume_dirty)
+    apply(doc, r)
+    -- later ticks note the time (the daemon said nothing since: it is counted from its last report)
+    r = streaming.on_resume_tick(doc, { now = 150 })
+    ev = emitted(r, "playback.spotify_resume")
+    assert_eq(ev, { type = "playback.spotify_resume", playlist = "sp", title = "So What", position_ms = 150000 })
+    apply(doc, resume.on_spotify(doc, ev))
+    -- the save timer writes it
+    r = resume.on_save(doc)
+    assert_eq(r.commands[1].doc.sp, { id = "So What", pos = 150000, preset = "4344" })
+    apply(doc, r)
+    -- a new track: its time is not noted against the old track's preset; a new preset is asked for
+    track("Freddie Freeloader", 160)
+    r = streaming.on_resume_tick(doc, { now = 180 })
+    assert_eq(topics(r), { "spotify/output/save_preset " }); assert_eq(r.state.streaming_int.resume_for.position_ms, 20000)
+    -- switched off here (no token off): after the restart, resume.json read back, the token starts where it was
+    local doc2 = doc_with()
+    doc2.library.playlists.sp.resume = true
+    apply(doc2, resume.on_boot(doc2, { resume = doc.resume }))
+    r = playback.on_request(doc2, { playlist = "sp", now = 1 })
+    assert_eq(topics(r)[1], "spotify/output/play_preset CD")
+    assert_eq(r.state.playback.resume_ms, 150000 - 15000)
+  end)
+
+  it("nothing is noted for a Spotify playlist without the switch, or paused", function()
+    local doc = doc_with()
+    apply(doc, playback.on_request(doc, { playlist = "sp", now = 0 }))
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.playing", now = 0 }))
+    assert_nil(streaming.on_resume_tick(doc, { now = 30 }))
+    doc.library.playlists.sp.resume = true
+    apply(doc, streaming.on_spotify(doc, { type = "spotify.paused", now = 31 }))
+    assert_nil(streaming.on_resume_tick(doc, { now = 60 }))
+  end)
+
+  it("an empty answer from Spotify keeps the last saved place", function()
+    local doc = doc_with({ int = { resume_for = { playlist = "sp", position_ms = 5000 } } })
+    local r = streaming.on_spotify(doc, { type = "spotify.new_preset", raw = "" })
+    assert_eq(r.commands[1].key, "streaming.resume_preset_empty"); assert_eq(r.state.streaming_int, {})
   end)
 
   it("config and volume changes reach the active service only", function()

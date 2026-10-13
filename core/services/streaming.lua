@@ -9,6 +9,7 @@
 -- Note: the 2022 firmware ships spotify_ctrl but no deezer_ctrl (docs/22 §1).
 local util = require("services.util")
 local playback = require("services.playback")
+local resume_rules = require("services.playback.resume")
 local streaming = {}
 
 local SP, DZ = "/j/spotify/output/", "/j/deezer/output/"
@@ -29,11 +30,17 @@ function streaming.service_of(p)
   return nil
 end
 
---- The now-playing record and the commands that start a streaming playlist.
+--- The now-playing record, the commands that start a streaming playlist and, for a Spotify
+--- playlist set to resume, where to seek once it plays (its place in resume.json, less the
+--- audiobooks' rewind).
 function streaming.start(doc, playlist_id, p)
   if p.spotify then
     local now = { playlist = playlist_id, service = "SPOTIFY", uri = p.spotify.uri, source = p.title, audiobook = false, image = p.image }
-    return now, { pub(SP .. "play_preset", hex2str(p.spotify.preset or "")) }
+    local saved = p.resume and doc.resume and doc.resume[playlist_id]
+    saved = saved and saved.preset and saved
+    local seek_ms = saved and (tonumber(saved.pos) or 0) - resume_rules.BACK_PAUSE
+    if not (seek_ms and seek_ms >= resume_rules.MIN_BACK) then seek_ms = nil end
+    return now, { pub(SP .. "play_preset", hex2str(saved and saved.preset or p.spotify.preset or "")) }, seek_ms
   end
   if p.deezer then
     if not (doc.deezer and doc.deezer.active) then
@@ -99,7 +106,44 @@ local function take_over(doc, sp)
   return r
 end
 
+-- Where Spotify is in its track. The daemon reports a position now and then, not continuously:
+-- streaming_int.clock keeps the last one and when it came, so that while it plays the time since
+-- is added (up to the track's end).
+local function sp_position(doc, now)
+  local pb, c = doc.playback or {}, (doc.streaming_int or {}).clock
+  local ms = tonumber(pb.position_ms) or 0
+  if pb.state == "playing" and c and now then ms = c.ms + math.max(0, now - c.t) * 1000 end
+  local d = pb.now and tonumber(pb.now.duration_ms)
+  if d and d > 0 and ms > d then ms = d end
+  return math.floor(ms)
+end
+streaming.sp_position = sp_position
+
+-- streaming_int less one of its keys (a request answered); the others stay
+local function without(doc, k)
+  local int = copy(doc.streaming_int or {}); int[k] = nil
+  return int
+end
+
+local on_spotify
 function streaming.on_spotify(doc, ev)
+  local r = on_spotify(doc, ev)
+  local kind = ev.type:sub(9)
+  if not (r and ev.now and (kind == "position" or kind == "playing" or kind == "paused" or kind == "now_playing")) then return r end
+  local pb = (r.state and r.state.playback) or doc.playback or {}
+  if not (pb.now and pb.now.service == "SPOTIFY") then return r end
+  local was = (doc.playback or {}).now or {}
+  local ms = tonumber(pb.position_ms) or 0
+  -- a new track starts at 0 until the daemon says otherwise
+  if kind == "now_playing" and pb.now.title ~= was.title then ms = 0 end
+  r.state = r.state or {}
+  local int = copy(r.state.streaming_int or doc.streaming_int or {})
+  int.clock = { ms = ms, t = ev.now }
+  r.state.streaming_int = int
+  return r
+end
+
+function on_spotify(doc, ev)
   local kind = ev.type:sub(9)     -- after "spotify."
   local sp = copy(doc.spotify or { active = false })
   if kind == "login" then
@@ -149,15 +193,24 @@ function streaming.on_spotify(doc, ev)
     return nil
   elseif kind == "new_preset" then
     local pending = doc.streaming_int and doc.streaming_int.preset_for
+    local resume_for = doc.streaming_int and doc.streaming_int.resume_for
+    if not pending and resume_for then
+      local int = without(doc, "resume_for")
+      if (ev.raw or "") == "" then
+        return { state = { streaming_int = int }, commands = { { kind = "log", level = "warn", key = "streaming.resume_preset_empty" } } }
+      end
+      return { state = { streaming_int = int }, commands = { emit("playback.spotify_resume", { playlist = resume_for.playlist,
+        title = resume_for.title, preset = str2hex(ev.raw), position_ms = resume_for.position_ms, flush = resume_for.flush }) } }
+    end
     if not pending then return { commands = { { kind = "log", level = "warn", key = "streaming.preset_unexpected" } } } end
     if (ev.raw or "") == "" then   -- Spotify refused: no playlist that would play nothing (the page says Spotify did not answer)
-      return { state = { streaming_int = {} }, commands = { { kind = "log", level = "warn", key = "streaming.preset_empty" } } }
+      return { state = { streaming_int = without(doc, "preset_for") }, commands = { { kind = "log", level = "warn", key = "streaming.preset_empty" } } }
     end
     if not (active(doc, "SPOTIFY") and doc.playback.state == "playing") then
-      return { state = { streaming_int = {} }, commands = { { kind = "log", level = "warn", key = "streaming.preset_not_playing" } } }
+      return { state = { streaming_int = without(doc, "preset_for") }, commands = { { kind = "log", level = "warn", key = "streaming.preset_not_playing" } } }
     end
     local now = doc.playback.now
-    return { state = { streaming_int = {} }, commands = { emit("library.add_playlist", {
+    return { state = { streaming_int = without(doc, "preset_for") }, commands = { emit("library.add_playlist", {
       title = pending.title or now.source, star = pending.star, image = now.image, spotify = { uri = now.uri, preset = str2hex(ev.raw or "") } }) } }
   end
   return nil
@@ -203,7 +256,42 @@ function streaming.on_new_spotify_playlist(doc, p)
   if not (active(doc, "SPOTIFY") and doc.playback.state == "playing") then
     return nil, { code = "unavailable", field = "", message = "Not playing spotify right now" }
   end
-  return { state = { streaming_int = { preset_for = { title = p.title, star = p.star } } }, commands = { pub(SP .. "save_preset") } }
+  local int = without(doc, "resume_for")   -- one answer for one request: the page's is the one waited for
+  int.preset_for = { title = p.title, star = p.star }
+  return { state = { streaming_int = int }, commands = { pub(SP .. "save_preset") } }
+end
+
+--- A token taken off a Spotify playlist set to resume: ask Spotify for a preset of where it is
+--- (the track), keep the time ourselves, then pause. The answer goes to resume.json at once.
+function streaming.on_save_resume(doc, ev)
+  local int = copy(doc.streaming_int or {})
+  local now = (doc.playback or {}).now or {}
+  local ms = int.clock and ev.now and sp_position(doc, ev.now) or tonumber(ev.position_ms) or 0
+  int.resume_for = { playlist = ev.playlist, title = now.title, position_ms = ms, t = ev.now, flush = true }
+  return { state = { streaming_int = int }, commands = { pub(SP .. "save_preset"), pub(SP .. "pauz") } }
+end
+
+local ASK_AGAIN_S = 20   -- a preset asked for and not answered: asked again after this long
+
+--- Every 30 s (timer streaming.resume) while a Spotify playlist set to resume plays: its place is
+--- noted, so that a Jooki switched off with the token on (inactivity, battery, the button) starts
+--- there again. A preset names the track only: one is asked for each new track, the time is ours.
+function streaming.on_resume_tick(doc, ev)
+  local pb = doc.playback or {}
+  local pl = pb.state == "playing" and pb.now and pb.now.service == "SPOTIFY" and pb.now.playlist
+  local p = pl and doc.library and doc.library.playlists[pl]
+  if not (p and p.resume and p.spotify) then return nil end
+  local int = doc.streaming_int or {}
+  if int.preset_for then return nil end
+  local title, ms = pb.now.title, sp_position(doc, ev.now)
+  local saved = (doc.resume or {})[pl]
+  if saved and saved.preset and saved.id == title then
+    return { commands = { emit("playback.spotify_resume", { playlist = pl, title = title, position_ms = ms }) } }
+  end
+  if int.resume_for and ev.now and ev.now - (int.resume_for.t or 0) < ASK_AGAIN_S then return nil end
+  local int2 = copy(int)
+  int2.resume_for = { playlist = pl, title = title, position_ms = ms, t = ev.now }
+  return { state = { streaming_int = int2 }, commands = { pub(SP .. "save_preset") } }
 end
 
 function streaming.on_deezer_get_playlists() return { commands = { pub(DZ .. "get_playlists") } } end
@@ -251,8 +339,11 @@ function streaming.install(api, dispatch)
     dispatch.on("deezer." .. k, "streaming", streaming.on_deezer)
   end
   dispatch.on("audiocfg.changed", "streaming", streaming.on_config)
+  dispatch.on("streaming.save_resume", "streaming", streaming.on_save_resume)
+  dispatch.on_timer("streaming.resume", "streaming", streaming.on_resume_tick)
   dispatch.on("net.status", "streaming", streaming.on_net)
-  dispatch.on("boot", "streaming", function() return { state = { spotify = { active = false }, deezer = {}, streaming_int = {} }, commands = { pub(SP .. "get_status") } } end)
+  dispatch.on("boot", "streaming", function() return { state = { spotify = { active = false }, deezer = {}, streaming_int = {} },
+    commands = { pub(SP .. "get_status"), { kind = "timer.every", name = "streaming.resume", seconds = 30 } } } end)
   api.command("spotify.new_playlist", S.new_spotify, streaming.on_new_spotify_playlist)
   api.command("deezer.get_playlists", nil, streaming.on_deezer_get_playlists)
   api.command("deezer.set_config", S.deezer_cfg, streaming.on_deezer_set_cfg)

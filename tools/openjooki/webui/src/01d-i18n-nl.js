@@ -87,7 +87,7 @@
     sp_saved: function (c, n) { return 'Klaar: ' + c + ' speelt „' + n + '”'; },
     sp_timeout: 'Spotify antwoordde niet. Speel de muziek opnieuw af in de Spotify-app en probeer het nog eens.',
     err_sp_not_playing: 'Speel eerst de muziek op de Jooki af vanuit de Spotify-app.',
-    sp_playlist: 'Spotify-afspeellijst', sp_playlist_help: 'Deze afspeellijst speelt vanuit Spotify: er kunnen geen bestanden aan worden toegevoegd. Om de muziek te veranderen, speel ze af in Spotify en zet ze opnieuw op het figuurtje.',
+    sp_resume: 'Verdergaan waar het stopte', sp_resume_help: 'Zet het figuurtje terug en de afspeellijst speelt verder waar ze stopte, een paar seconden eerder, ook na een ander figuurtje of een herstart. Uit: ze begint telkens opnieuw bij het begin.', sp_playlist: 'Spotify-afspeellijst', sp_playlist_help: 'Deze afspeellijst speelt vanuit Spotify: er kunnen geen bestanden aan worden toegevoegd. Om de muziek te veranderen, speel ze af in Spotify en zet ze opnieuw op het figuurtje.',
     live: 'Live', volume: 'Volume',
     uploading: 'Uploaden', processing: 'Verwerken op de Jooki…', done: 'Toegevoegd', queued: 'Wachten',
     up_too_small: 'Leeg of te klein bestand', up_no_space: 'Niet genoeg ruimte over op de Jooki',

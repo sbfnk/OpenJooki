@@ -99,7 +99,7 @@
     sp_saved: function (c, n) { return 'C\'est fait : ' + c + ' lance « ' + n + ' »'; },
     sp_timeout: 'Spotify n\'a pas répondu. Relance la musique dans l\'appli Spotify et réessaie.',
     err_sp_not_playing: 'Lance d\'abord la musique sur le Jooki depuis l\'appli Spotify.',
-    sp_playlist: 'Playlist Spotify', sp_playlist_help: 'Cette playlist se joue depuis Spotify : on ne peut pas y ajouter de fichiers. Pour changer la musique, fais-la jouer dans Spotify et remets-la sur le personnage.',
+    sp_resume: 'Reprendre où on s’est arrêté', sp_resume_help: 'Le personnage reposé, la playlist reprend là où elle s’est arrêtée, quelques secondes avant, même après un autre personnage ou un redémarrage. Désactivé : elle repart du début à chaque fois.', sp_playlist: 'Playlist Spotify', sp_playlist_help: 'Cette playlist se joue depuis Spotify : on ne peut pas y ajouter de fichiers. Pour changer la musique, fais-la jouer dans Spotify et remets-la sur le personnage.',
     live: 'En direct', volume: 'Volume',
     uploading: 'Envoi', processing: 'Analyse sur le Jooki…', done: 'Ajouté', queued: 'En attente',
     up_too_small: 'Fichier vide ou trop petit', up_no_space: 'Plus assez de place sur le Jooki',
@@ -287,7 +287,7 @@
     sp_saved: function (c, n) { return 'Done: ' + c + ' plays “' + n + '”'; },
     sp_timeout: 'Spotify did not answer. Play the music again in the Spotify app and try again.',
     err_sp_not_playing: 'First play the music on the Jooki from the Spotify app.',
-    sp_playlist: 'Spotify playlist', sp_playlist_help: 'This playlist plays from Spotify: files cannot be added to it. To change the music, play it in Spotify and put it on the character again.',
+    sp_resume: 'Pick up where it stopped', sp_resume_help: 'Put the character back on and the playlist continues where it stopped, a few seconds back, even after another character or a restart. Off: it starts from the beginning every time.', sp_playlist: 'Spotify playlist', sp_playlist_help: 'This playlist plays from Spotify: files cannot be added to it. To change the music, play it in Spotify and put it on the character again.',
     live: 'Live', volume: 'Volume',
     uploading: 'Uploading', processing: 'Processing on the Jooki…', done: 'Added', queued: 'Waiting',
     up_too_small: 'Empty or too small file', up_no_space: 'Not enough space left on the Jooki',
@@ -475,7 +475,7 @@
     sp_saved: function (c, n) { return 'Klaar: ' + c + ' speelt „' + n + '”'; },
     sp_timeout: 'Spotify antwoordde niet. Speel de muziek opnieuw af in de Spotify-app en probeer het nog eens.',
     err_sp_not_playing: 'Speel eerst de muziek op de Jooki af vanuit de Spotify-app.',
-    sp_playlist: 'Spotify-afspeellijst', sp_playlist_help: 'Deze afspeellijst speelt vanuit Spotify: er kunnen geen bestanden aan worden toegevoegd. Om de muziek te veranderen, speel ze af in Spotify en zet ze opnieuw op het figuurtje.',
+    sp_resume: 'Verdergaan waar het stopte', sp_resume_help: 'Zet het figuurtje terug en de afspeellijst speelt verder waar ze stopte, een paar seconden eerder, ook na een ander figuurtje of een herstart. Uit: ze begint telkens opnieuw bij het begin.', sp_playlist: 'Spotify-afspeellijst', sp_playlist_help: 'Deze afspeellijst speelt vanuit Spotify: er kunnen geen bestanden aan worden toegevoegd. Om de muziek te veranderen, speel ze af in Spotify en zet ze opnieuw op het figuurtje.',
     live: 'Live', volume: 'Volume',
     uploading: 'Uploaden', processing: 'Verwerken op de Jooki…', done: 'Toegevoegd', queued: 'Wachten',
     up_too_small: 'Leeg of te klein bestand', up_no_space: 'Niet genoeg ruimte over op de Jooki',
@@ -1931,6 +1931,12 @@
       });
     } }, icon('trash'), t('delete_playlist')));
   }
+  // "Pick up where it stopped" of a Spotify playlist: on its page and on its character's sheet
+  function resumeSwitch(p, id) {
+    return h('div', { class: 'card', style: 'margin-top:16px' },
+      h('label', { class: 'switch' }, h('div', null, h('div', null, t('sp_resume')), h('div', { class: 'small muted' }, t('sp_resume_help'))),
+        h('input', { type: 'checkbox', role: 'switch', checked: !!p.resume, 'data-k': 'spresume', onchange: function (e) { send('PLAYLIST_UPDATE', { playlist: { id: id, resume: e.target.checked } }); } })));
+  }
   function viewPlaylist(id) {
     if (id === 'TRASH') { setTimeout(function () { go('#/library/unused'); }, 0); return []; }
     var p = pls()[id];
@@ -1965,6 +1971,7 @@
       return [head, h('div', { class: 'actions' },
           h('button', { class: 'btn primary', 'data-k': 'spplay', onclick: function () { send('PLAYLIST_PLAY', { playlistId: id }); } }, icon('play'), t('play'))),
         h('div', { class: 'card empty', 'data-k': 'sphelp' }, h('div', { class: 'big' }, '🎧'), h('div', null, t('sp_playlist')), h('div', { class: 'small' }, t('sp_playlist_help'))),
+        resumeSwitch(p, id),
         deletePlaylistBtn(p, id)];
     }
     var actions = h('div', { class: 'actions' },
@@ -2207,7 +2214,7 @@
       live: true,
       sig: function () {
         var g = tokenGroups(); var p = playlistOfChar(sid);
-        return JSON.stringify([g.groups[sid], p && p.id, S.nfc.tagId, (g.groups[sid] || []).map(function (tag) { return (S.db.tokens[tag] || {}).image || ''; })]);
+        return JSON.stringify([g.groups[sid], p && p.id, p && !!p.resume, S.nfc.tagId, (g.groups[sid] || []).map(function (tag) { return (S.db.tokens[tag] || {}).image || ''; })]);
       },
       render: function () {
         var p = playlistOfChar(sid);
@@ -2232,6 +2239,7 @@
           h('p', { class: 'small muted' }, foreign ? t('foreign_hint') : own ? t('own_hint')
             : sid === 'Jooki.Flat' || sid === 'Jooki.ThankYou' ? t('flat_shared_hint') : t('tokens_intro')),
           h('label', { class: 'field' }, h('span', null, t('launches')), sel),
+          p && p.spotify ? resumeSwitch(p, p.id) : null,
           tags.map(function (tag, i) {
             var tk = S.db.tokens[tag] || {};
             var live = S.nfc.tagId === tag;

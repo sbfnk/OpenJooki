@@ -1,5 +1,20 @@
 # OpenJooki — Changelog
 
+## Next release
+- **A Spotify character can pick up where it stopped.** Taking the character off and putting it
+  back used to start its playlist from the beginning every time. Switch on *Pick up where it
+  stopped*, on that playlist's page or on the character's sheet in Tokens, and it continues where
+  it stopped, 15 seconds back, even after another character, or after the Jooki switched off with
+  the character still on it. Each character has its own switch.
+- For the tinkerers: playlists gain `resume` (v1 `PLAYLIST_UPDATE`, v2 `playlist.update`). With
+  it, the place goes to `resume.json` next to the audiobooks' (`preset`, the track as `id`, `pos`):
+  every 30 s while it plays the time in the track is noted, counted on from Spotify's last
+  `position`, and each new track asks `spotify_ctrl` for a preset (`save_preset`); the save timer
+  writes it every minute. Taking the token off asks for a preset before pausing and writes at once.
+  Putting the token back sends `cont` when that playlist is still the paused one; otherwise it plays
+  the saved preset and seeks once Spotify plays. A preset names the playlist, the track and its
+  index in the playlist, but not the time.
+
 ## OpenJooki 2.4.2 (12 October 2026) — Updates check their own tools
 - **Seven more sounds behind the voice** in Jookistory (already online, the studio lives on the
   site): *The sea* (waves that swell and withdraw, a gull now and then), *Fireside* (crackles, a

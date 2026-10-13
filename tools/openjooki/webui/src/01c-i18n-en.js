@@ -87,7 +87,7 @@
     sp_saved: function (c, n) { return 'Done: ' + c + ' plays “' + n + '”'; },
     sp_timeout: 'Spotify did not answer. Play the music again in the Spotify app and try again.',
     err_sp_not_playing: 'First play the music on the Jooki from the Spotify app.',
-    sp_playlist: 'Spotify playlist', sp_playlist_help: 'This playlist plays from Spotify: files cannot be added to it. To change the music, play it in Spotify and put it on the character again.',
+    sp_resume: 'Pick up where it stopped', sp_resume_help: 'Put the character back on and the playlist continues where it stopped, a few seconds back, even after another character or a restart. Off: it starts from the beginning every time.', sp_playlist: 'Spotify playlist', sp_playlist_help: 'This playlist plays from Spotify: files cannot be added to it. To change the music, play it in Spotify and put it on the character again.',
     live: 'Live', volume: 'Volume',
     uploading: 'Uploading', processing: 'Processing on the Jooki…', done: 'Added', queued: 'Waiting',
     up_too_small: 'Empty or too small file', up_no_space: 'Not enough space left on the Jooki',
